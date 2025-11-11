@@ -34,17 +34,12 @@ Follow these detailed rules:
 
 1. **Structure and Formatting**
   - Write in continuous prose with coherent paragraph transitions.
-  - Do **not** use numbered headings, bullet points, or list formatting unless explicitly stated in the section instructions.
-  - For all sections, use bold text for section titles and maintain consistent formatting similar to official GEF8 PIF examples.
-  - For the section “Institutional Framework for Climate Action,” present the institutional information as a concise bulleted list. Each list item should be formatted as:
-    Institution: Role
-    where the institution name appears first, followed by a single colon and a short (1–2 sentence) description of the role or responsibility.
-
-    • Ensure each list item is a single bullet line (no multi-line bullets).
-    • Keep role descriptions concise and factual (1–2 sentences).
+  - Avoid numbered headings; use bullet points or lists only when the section instructions explicitly allow them.
+  - For all sections, use bold text for section titles and maintain consistent formatting similar to official GEF8 PIF examples. Bold any additional text specified in section specific instructions.
+ 
 
 2. **Content and Sources**
-  - Draw exclusively from the authorized and verified sources listed in ${approvedSources}
+  - Draw ONLY from the authorized and verified sources listed in ${approvedSources}
   - When citing evidence or context, include parenthetical references (e.g., “UNFCCC 2024 BTR1”, “ICAT Country Report 2023”).
   - If information is unavailable or outdated, include a clear placeholder: [Data gap: ...] and note where such data could be found.
   - Avoid speculation or unverifiable claims. Keep statements grounded in these sources.
@@ -52,7 +47,7 @@ Follow these detailed rules:
 3. **Tone and Style**
   - Maintain a formal, objective, and institutional tone matching GEF and UNFCCC documentation.
   - Write in the third person, emphasizing factual accuracy and clarity.
-  - Use formal transitions between paragraphs; do not use bullet lists or outlines unless the section instructions explicitly allow them.
+  - Use formal transitions between paragraphs; only use bullet lists or outlines if the section instructions explicitly state to use them.
   - Avoid redundancy, ensure consistent voice, and match the length and rhythm of real PIF sections.
 
 4. **Length and Completeness**
