@@ -489,7 +489,6 @@ def build_json_entry(
         "doc_url": url,
         "extracted_text": text,
         "created_utc": timestamp.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "stale": False,
     }
 
 
@@ -509,29 +508,20 @@ def merge_bundles(
         tuple(entry[field] for field in key_fields): entry for entry in existing_entries
     }
 
-    updated_entries: List[Dict[str, object]] = []
-    seen_keys: set[Tuple[str, ...]] = set()
+    merged_entries: Dict[Tuple[str, ...], Dict[str, object]] = {}
 
     for entry in new_entries:
         key = tuple(entry[field] for field in key_fields)
-        seen_keys.add(key)
         existing = existing_lookup.get(key)
-        if existing:
-            if existing.get("extracted_text") == entry["extracted_text"]:
-                entry["created_utc"] = existing.get("created_utc", entry["created_utc"])
-                entry["stale"] = existing.get("stale", False)
-            else:
-                existing["stale"] = True
-                updated_entries.append(existing)
-        updated_entries.append(entry)
+        if existing and existing.get("extracted_text") == entry["extracted_text"]:
+            entry["created_utc"] = existing.get("created_utc", entry["created_utc"])
+        merged_entries[key] = entry
 
-    for key, entry in existing_lookup.items():
-        if key not in seen_keys:
-            entry["stale"] = True
-            updated_entries.append(entry)
-
-    updated_entries.sort(key=lambda item: (item["country"], item["source_doc"], item["created_utc"]))
-    return updated_entries
+    sorted_entries = sorted(
+        merged_entries.values(),
+        key=lambda item: (item["country"], item["source_doc"], item["created_utc"]),
+    )
+    return sorted_entries
 
 
 def write_section_outputs(
