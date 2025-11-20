@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Iterable
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 try:
@@ -37,6 +37,13 @@ except ImportError as import_error:  # pragma: no cover - dependency guard
     raise SystemExit(
         "Missing dependency 'PyMuPDF'. Please run: pip install PyMuPDF"
     ) from import_error
+
+try:
+    from supabase import create_client, Client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    # Don't log here as logging may not be configured yet
 
 
 BASE_URL = "https://unfccc.int"
@@ -558,6 +565,143 @@ def write_section_outputs(
         logging.debug("Wrote %s", doc_path)
 
 
+def connect_to_supabase() -> Optional[Client]:
+    """Connect to Supabase and return client, or None if unavailable."""
+    if not SUPABASE_AVAILABLE:
+        return None
+    
+    try:
+        config_path = Path(__file__).parent / "supabase_config.json"
+        if not config_path.exists():
+            logging.debug("Supabase config not found, skipping database check")
+            return None
+        
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        
+        url = config.get("project_url")
+        key = config.get("api_key")
+        
+        if not url or not key:
+            logging.debug("Supabase credentials incomplete, skipping database check")
+            return None
+        
+        return create_client(url, key)
+    except Exception as exc:
+        logging.debug("Failed to connect to Supabase: %s", exc)
+        return None
+
+
+def get_country_from_database(client: Client, country_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve country data from Supabase countries table.
+    
+    Returns:
+        Dictionary with 'name' and 'sections' keys, or None if not found
+    """
+    try:
+        response = client.table("countries").select("name, sections").eq("name", country_name).execute()
+        
+        if response.data and len(response.data) > 0:
+            return response.data[0]
+        return None
+    except Exception as exc:
+        logging.debug("Error querying database for %s: %s", country_name, exc)
+        return None
+
+
+def convert_db_sections_to_entries(
+    country: str,
+    db_data: Dict[str, Any],
+    timestamp: datetime,
+) -> Dict[str, List[Dict[str, object]]]:
+    """
+    Convert database sections JSON to the format expected by the pipeline.
+    
+    Args:
+        country: Country name
+        db_data: Database record with 'sections' jsonb field
+        timestamp: Timestamp to use for entries
+        
+    Returns:
+        Dictionary mapping section names to lists of entries
+    """
+    collected: Dict[str, List[Dict[str, object]]] = {
+        section: [] for section in SECTION_DEFINITIONS
+    }
+    
+    sections_data = db_data.get("sections", {})
+    if not isinstance(sections_data, dict) or "sections" not in sections_data:
+        logging.warning("Invalid sections format in database for %s", country)
+        return collected
+    
+    for section_obj in sections_data.get("sections", []):
+        section_name = section_obj.get("name", "")
+        if section_name not in SECTION_DEFINITIONS:
+            continue
+        
+        for doc in section_obj.get("documents", []):
+            doc_type = doc.get("doc_type", "")
+            extracted_text = doc.get("extracted_text", "")
+            
+            entry = build_json_entry(
+                country=country,
+                section=section_name,
+                source_doc=doc_type,
+                url="",  # Not stored in new format
+                text=extracted_text,
+                timestamp=timestamp,
+            )
+            collected[section_name].append(entry)
+    
+    return collected
+
+
+def check_and_use_database_data(
+    country: str,
+    output_root: Path,
+    force_scrape: bool = False,
+) -> bool:
+    """
+    Check if country data exists in database and use it if available.
+    
+    Args:
+        country: Country name to check
+        output_root: Output directory for writing JSON files
+        force_scrape: If True, skip database check and always scrape
+        
+    Returns:
+        True if database data was used, False if scraping should proceed
+    """
+    if force_scrape:
+        return False
+    
+    client = connect_to_supabase()
+    if not client:
+        logging.debug("Supabase not available, proceeding with scrape")
+        return False
+    
+    db_data = get_country_from_database(client, country)
+    if not db_data:
+        logging.info("No existing data found in database for %s, proceeding with scrape", country)
+        return False
+    
+    logging.info("Found existing data in database for %s, using database data instead of scraping", country)
+    
+    # Convert database data to entries format
+    timestamp = datetime.now(timezone.utc)
+    collected = convert_db_sections_to_entries(country, db_data, timestamp)
+    
+    # Write the data to output files (same format as scraping would produce)
+    for section_name, entries in collected.items():
+        if entries:
+            write_section_outputs(output_root, section_name, entries)
+        else:
+            logging.warning("No entries found for section '%s' in database data", section_name)
+    
+    return True
+
+
 def main(
     country: str,
     output_root: Optional[Path] = None,
@@ -566,8 +710,19 @@ def main(
     local_pdfs: Optional[List[Path]] = None,
     local_pdf_dir: Optional[Path] = None,
     skip_scrape: bool = False,
+    force_scrape: bool = False,
 ) -> None:
     """End-to-end pipeline orchestrator."""
+    output_root = output_root or Path(__file__).resolve().parent / "data"
+    ensure_directory(output_root)
+    
+    # Check database first before scraping
+    if not force_scrape and not skip_scrape:
+        if check_and_use_database_data(country, output_root, force_scrape):
+            logging.info("Using database data for %s, skipping scrape", country)
+            return
+    
+    # Proceed with scraping if database check didn't find data or force_scrape is True
     session = request_session(cookies=cookies)
     pdf_links: List[PDFLink] = []
 
@@ -615,9 +770,7 @@ def main(
         return
 
     timestamp = datetime.now(timezone.utc)
-    output_root = output_root or Path(__file__).resolve().parent / "data"
     download_root = download_root or Path(__file__).resolve().parent / "downloads"
-    ensure_directory(output_root)
     ensure_directory(download_root)
 
     collected: Dict[str, List[Dict[str, object]]] = {
@@ -696,6 +849,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Skip remote scraping and use only local PDFs.",
     )
+    parser.add_argument(
+        "--force-scrape",
+        action="store_true",
+        help="Force scraping even if country data exists in database.",
+    )
     return parser.parse_args(argv)
 
 
@@ -724,6 +882,7 @@ if __name__ == "__main__":
             local_pdf_paths,
             local_pdf_directory,
             arguments.skip_scrape,
+            arguments.force_scrape,
         )
     except requests.HTTPError as err:
         logging.error("HTTP error: %s", err)
