@@ -22,9 +22,9 @@ python3 -m src.cli
 python3 -m src.main --country "Cuba" --out out/Cuba_PIF --format docx   --max-sources 25 --crawl-depth 2 --confidence-target 90 --max-passes 3   --fetch-concurrency 4 --model gpt-4o-mini
 ```
 # entire draft
-OPENAI_API_KEY="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" python3 -m src.main --country "Cuba" --out out/Cuba_PIF --format docx --max-sources 25 --crawl-depth 2 --confidence-target 90 --max-passes 3 --fetch-concurrency 4 --model gpt-4o-mini
+OPENAI_API_KEY=" " python3 -m src.main --country "Cuba" --out out/Cuba_PIF --format docx --max-sources 25 --crawl-depth 2 --confidence-target 90 --max-passes 3 --fetch-concurrency 4 --model gpt-4o-mini
 # by section
-OPENAI_API_KEY="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" python -m src.main --country "Cuba" --sections "baseline_stakeholders,baseline_unfccc_reporting" --out out/Cuba_subset --format docx --max-sources 25 --crawl-depth 2 --confidence-target 90 --max-passes 2 --fetch-concurrency 4 --model gpt-4o-mini
+OPENAI_API_KEY=" " python -m src.main --country "Cuba" --sections "baseline_stakeholders,baseline_unfccc_reporting" --out out/Cuba_subset --format docx --max-sources 25 --crawl-depth 2 --confidence-target 90 --max-passes 2 --fetch-concurrency 4 --model gpt-4o-mini
 
 sections: 
     "baseline_national_tf_header",
