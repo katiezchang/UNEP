@@ -13,7 +13,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install -r requirements.txt
 
-export OPENAI_API_KEY=sk-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
+export OPENAI_API_KEY=
 
 # Interactive
 python3 -m src.cli
