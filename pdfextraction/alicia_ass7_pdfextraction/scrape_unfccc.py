@@ -764,12 +764,12 @@ def check_cbit_database(country: str) -> bool:
         return False
 
 
-def prompt_for_cbit_file(country: str) -> Optional[str]:
+def prompt_for_file(prompt_message: str) -> Optional[str]:
     """
-    Prompt user for CBIT document upload (supports both local file paths and URLs).
+    Generic function to prompt user for document upload (supports both local file paths and URLs).
     Returns the file content as a string, or None if user presses enter.
     """
-    print(f"\nThere was CBIT 1 for {country} published. Are there any relevant documents you can upload? If not, press enter", flush=True)
+    print(f"\n{prompt_message}", flush=True)
     print("File path or URL: ", end="", flush=True)
     user_input = input().strip()
     
@@ -857,6 +857,15 @@ def prompt_for_cbit_file(country: str) -> Optional[str]:
             return None
 
 
+def prompt_for_cbit_file(country: str) -> Optional[str]:
+    """
+    Prompt user for CBIT document upload (supports both local file paths and URLs).
+    Returns the file content as a string, or None if user presses enter.
+    """
+    prompt_message = f"There was CBIT 1 for {country} published. Are there any relevant documents you can upload? If not, press enter"
+    return prompt_for_file(prompt_message)
+
+
 def main(
     country: str,
     output_root: Optional[Path] = None,
@@ -871,8 +880,42 @@ def main(
     output_root = output_root or Path(__file__).resolve().parent / "data"
     ensure_directory(output_root)
     
-    # CBIT Check: Check database for completed CBIT projects
+    # ICAT/PATPA Prompt: Ask for relevant transparency framework documents
     print(f"\n[INFO] === Starting process for {country} ===\n", flush=True)
+    print("[INFO] Step 0: Checking for ICAT/PATPA documents...", flush=True)
+    logging.info("=== Starting process for %s ===", country)
+    logging.info("Step 0: Checking for ICAT/PATPA documents...")
+    
+    icat_patpa_info: Optional[str] = None
+    icat_patpa_prompt = (
+        f"Are there any documents relevant to Initiative for Climate Action Transparency (ICAT) "
+        f"or Partnership on Transparency in the Paris Agreement (PATPA) for {country}? "
+        f"If not, press enter"
+    )
+    icat_patpa_info = prompt_for_file(icat_patpa_prompt)
+    
+    if icat_patpa_info:
+        # Check for transparency framework keywords
+        transparency_keywords = ["transparency framework", "enhanced transparency", "ETF", 
+                                "ICAT", "PATPA", "biennial transparency report", "BTR"]
+        has_relevant_content = any(keyword.lower() in icat_patpa_info.lower() for keyword in transparency_keywords)
+        
+        if has_relevant_content:
+            print(f"[INFO] ICAT/PATPA document loaded with relevant transparency framework content. Proceeding with creating PIF.")
+            logging.info("ICAT/PATPA document loaded with relevant transparency framework content.")
+            # Save ICAT/PATPA info to a file for later use in PDF generation
+            icat_patpa_file = output_root / f"{country}_icat_patpa_info.txt"
+            icat_patpa_file.write_text(icat_patpa_info, encoding="utf-8")
+            print(f"[INFO] Saved ICAT/PATPA information to {icat_patpa_file}")
+            logging.info("Saved ICAT/PATPA information to %s", icat_patpa_file)
+        else:
+            print(f"[INFO] ICAT/PATPA document loaded but does not contain relevant transparency framework keywords. Proceeding with creating PIF.")
+            logging.info("ICAT/PATPA document loaded but does not contain relevant transparency framework keywords.")
+    else:
+        print(f"[INFO] No ICAT/PATPA document provided for {country}. Proceeding with creating PIF.")
+        logging.info("No ICAT/PATPA document provided for %s. Proceeding with creating PIF.", country)
+    
+    # CBIT Check: Check database for completed CBIT projects
     print("[INFO] Step 1: Checking CBIT database...", flush=True)
     logging.info("=== Starting process for %s ===", country)
     logging.info("Step 1: Checking CBIT database...")
