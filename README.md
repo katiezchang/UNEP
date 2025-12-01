@@ -32,8 +32,4 @@ The goal is to reduce manual work by:
    - Generate draft PIF sections aligned with the official GEF-8 template.
    - `gef_pif_updated/` contains the most up-to-date code for this step.
 
-3. **Orchestration (`main.py`)**
-   - (Planned / WIP) Tie extraction and generation together into a single run
-     for a given country.
-
 NOTE: THIS IS NOT THE PROTOTYPE REPO
