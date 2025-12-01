@@ -1,11 +1,132 @@
-import "dotenv/config";
+import * as dotenv from "dotenv";
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { spawn } from "child_process";
 import PDFDocument from "pdfkit";
+import { createRequire } from "module";
 import { generateSection } from "./agents/generatorAgent.js";
 import { verifyAndReviseSection } from "./agents/verifierAgent.js";
 
+// Get the directory of the current file
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Try multiple .env locations: current project root, or alicia_ass7 at the same level
+const envPaths = [
+  path.resolve(__dirname, "../.env"), // section_generator/alicia_ass7/.env
+  path.resolve(__dirname, "../../../alicia_ass7/.env"), // alicia_ass7/.env (sibling directory from UCEP root)
+];
+
+let envLoaded = false;
+for (const envPath of envPaths) {
+  if (fs.existsSync(envPath)) {
+    const result = dotenv.config({ path: envPath });
+    if (!result.error) {
+      envLoaded = true;
+      break;
+    }
+  }
+}
+
+// If still not loaded, try default location
+if (!envLoaded) {
+  dotenv.config();
+}
+
+const apiKey = process.env.OPENAI_API_KEY;
+
+if (!apiKey) {
+  console.error("Error: OPENAI_API_KEY not found in .env file");
+  process.exit(1);
+}
+
+const require = createRequire(import.meta.url);
+
 const OUT_JSON = "exported_outputs.json";
 const OUT_PDF = "exported_sections.pdf";
+
+/**
+ * Call the Python scraping script to extract UNFCCC data
+ */
+async function scrapeUNFCCCData(country: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const scrapeScriptPath = path.resolve(__dirname, "../../../pdfextraction/alicia_ass7_pdfextraction/scrape_unfccc.py");
+    const cookiesPath = path.resolve(__dirname, "../../../pdfextraction/alicia_ass7_pdfextraction/cookies.json");
+    
+    console.log(`Running UNFCCC scraper for ${country}...`);
+    const pythonProcess = spawn("python", [
+      scrapeScriptPath,
+      "--country", country,
+      "--cookies-file", cookiesPath,
+      "--log-level", "INFO",
+      "--force-scrape"
+    ], {
+      cwd: path.dirname(scrapeScriptPath),
+      stdio: "inherit"
+    });
+    
+    pythonProcess.on("close", (code) => {
+      if (code === 0) {
+        console.log(`UNFCCC scraping completed for ${country}`);
+        resolve();
+      } else {
+        console.warn(`UNFCCC scraping exited with code ${code}, but continuing...`);
+        resolve(); // Continue even if scraping fails
+      }
+    });
+    
+    pythonProcess.on("error", (error) => {
+      console.error(`Error running scraper: ${error.message}`);
+      resolve(); // Continue even if scraping fails
+    });
+  });
+}
+
+/**
+ * Load scraped data from bundle JSON files
+ */
+function loadScrapedData(country: string): { institutional?: string; policy?: string } {
+  const dataDir = path.resolve(__dirname, "../../../pdfextraction/alicia_ass7_pdfextraction/data");
+  const instBundle = path.join(dataDir, "Institutional_framework_bundle.json");
+  const policyBundle = path.join(dataDir, "National_policy_framework_bundle.json");
+  
+  const result: { institutional?: string; policy?: string } = {};
+  
+  try {
+    if (fs.existsSync(instBundle)) {
+      const data = JSON.parse(fs.readFileSync(instBundle, "utf-8"));
+      // Find entries for this country
+      const countryEntries = Array.isArray(data) 
+        ? data.filter((entry: any) => entry.country === country)
+        : [];
+      if (countryEntries.length > 0) {
+        // Combine all extracted text for this country
+        result.institutional = countryEntries.map((e: any) => e.extracted_text).join("\n\n");
+      }
+    }
+  } catch (error) {
+    console.warn(`Could not load institutional framework data: ${error}`);
+  }
+  
+  try {
+    if (fs.existsSync(policyBundle)) {
+      const data = JSON.parse(fs.readFileSync(policyBundle, "utf-8"));
+      // Find entries for this country
+      const countryEntries = Array.isArray(data)
+        ? data.filter((entry: any) => entry.country === country)
+        : [];
+      if (countryEntries.length > 0) {
+        // Combine all extracted text for this country
+        result.policy = countryEntries.map((e: any) => e.extracted_text).join("\n\n");
+      }
+    }
+  } catch (error) {
+    console.warn(`Could not load national policy framework data: ${error}`);
+  }
+  
+  return result;
+}
 
 type Outputs = {
   country: string;
@@ -14,8 +135,29 @@ type Outputs = {
   generatedAt: string;
 };
 
-async function regenerate(country: string): Promise<Outputs> {
-  const institutionalFrameworkInstructions = `
+/**
+ * Load CBIT information from file saved by the Python scraping script.
+ * Returns the CBIT info as a string, or null if the file doesn't exist.
+ */
+function loadCBITInfo(country: string): string | null {
+  const dataDir = path.resolve(__dirname, "../../../pdfextraction/alicia_ass7_pdfextraction/data");
+  const cbitFile = path.join(dataDir, `${country}_cbit_info.txt`);
+  
+  try {
+    if (fs.existsSync(cbitFile)) {
+      const content = fs.readFileSync(cbitFile, "utf-8");
+      console.log(`Loaded CBIT information from ${cbitFile}`);
+      return content;
+    }
+  } catch (error) {
+    console.warn(`Could not load CBIT information: ${error}`);
+  }
+  
+  return null;
+}
+
+async function regenerate(country: string, cbitInfo: string | null = null, scrapedData?: { institutional?: string; policy?: string }): Promise<Outputs> {
+  let institutionalFrameworkInstructions = `
 Write the section "Institutional Framework for Climate Action" for \${country} following the official GEF8 PIF format.
 
 Structure and tone requirements:
@@ -44,7 +186,32 @@ Content structure:
    - Mention the importance of inter-ministerial coordination and data quality assurance.
 `;
 
-  const nationalPolicyInstructions = `
+  // Add scraped UNFCCC data if available
+  if (scrapedData?.institutional) {
+    institutionalFrameworkInstructions += `\n\n**IMPORTANT: Extracted UNFCCC Data**
+The following text was extracted from UNFCCC reports (BUR, BTR, NDC, NC) for ${country}. You MUST use this as the primary source of information and base your section on this extracted data:
+
+${scrapedData.institutional}
+
+Use this extracted data to inform the institutions, their roles, and the institutional framework structure. Ensure all information aligns with what was extracted from the official UNFCCC documents.`;
+  }
+  
+  // Add CBIT information if available
+  if (cbitInfo) {
+    institutionalFrameworkInstructions += `\n\n**IMPORTANT: CBIT Project Information**
+The following information is from a previous CBIT project for ${country}. You MUST incorporate relevant details from this CBIT project into the section, particularly:
+- Any institutions that were established or strengthened through the CBIT project
+- Capacity-building activities and their impact on the institutional framework
+- MRV systems or transparency mechanisms developed under CBIT
+- Coordination mechanisms that were enhanced through CBIT support
+
+CBIT Project Information:
+${cbitInfo}
+
+Ensure that the CBIT project's contributions to the institutional framework are naturally integrated into the section narrative.`;
+  }
+
+  let nationalPolicyInstructions = `
 Write the section "National Policy Framework" for \${country} following the official GEF8 PIF format. This section focuses on specific LAWS, POLICIES, DECREES, and STRATEGIES—not on institutional frameworks or organizational structures.
 
 SOURCE AND RECENCY REQUIREMENTS:
@@ -91,23 +258,58 @@ Content structure:
    - DO NOT FORMAT this as bullet points; use flowing prose.
 `;
 
-  const [instFramework, policyFramework] = await Promise.all([
-    generateSection({
+  // Add scraped UNFCCC data if available
+  if (scrapedData?.policy) {
+    nationalPolicyInstructions += `\n\n**IMPORTANT: Extracted UNFCCC Data**
+The following text was extracted from UNFCCC reports (BUR, BTR, NDC, NC) for ${country}. You MUST use this as the primary source of information and base your section on this extracted data:
+
+${scrapedData.policy}
+
+Use this extracted data to inform the policies, laws, decrees, and strategies. Ensure all information aligns with what was extracted from the official UNFCCC documents.`;
+  }
+  
+  // Add CBIT information if available
+  if (cbitInfo) {
+    nationalPolicyInstructions += `\n\n**IMPORTANT: CBIT Project Information**
+The following information is from a previous CBIT project for ${country}. You MUST incorporate relevant details from this CBIT project into the section, particularly:
+- Any policies, laws, or strategies that were developed or strengthened through the CBIT project
+- Policy frameworks or legal instruments that were created to support transparency and MRV systems under CBIT
+- National policies that were aligned with the Enhanced Transparency Framework (ETF) as part of CBIT activities
+- Any decrees, regulations, or strategic plans that emerged from or were informed by CBIT capacity-building efforts
+
+CBIT Project Information:
+${cbitInfo}
+
+Ensure that the CBIT project's contributions to the policy framework are naturally integrated into the section narrative, particularly in the bullet list of policy instruments and in the concluding paragraph.`;
+  }
+
+  console.log("Generating Institutional Framework section... (this may take 15-30 seconds)");
+  const instStartTime = Date.now();
+  const instFramework = await generateSection({
       sectionTitle: "Institutional Framework for Climate Action",
       instructions: institutionalFrameworkInstructions,
       country,
-    }),
-    generateSection({
+  });
+  console.log(`Institutional Framework generated in ${((Date.now() - instStartTime) / 1000).toFixed(1)} seconds`);
+  
+  console.log("Generating National Policy Framework section... (this may take 15-30 seconds)");
+  const policyStartTime = Date.now();
+  const policyFramework = await generateSection({
       sectionTitle: "National Policy Framework",
-      instructions: nationalPolicyInstructions + "\n\nCRITICAL: For Cuba, MUST include the following foundational policies from approved sources: (1) Cuban Nationally Determined Contribution (NDC) with year, (2) Tarea Vida (2016 or later updates) as the national framework for climate action, and (3) Decree 86 on climate change governance. These are core to Cuba's climate framework and are verifiable from UNFCCC and approved sources. Include these along with other verifiable recent policies.",
+    instructions: nationalPolicyInstructions + (country === "Cuba" ? "\n\nCRITICAL: For Cuba, MUST include the following foundational policies from approved sources: (1) Cuban Nationally Determined Contribution (NDC) with year, (2) Tarea Vida (2016 or later updates) as the national framework for climate action, and (3) Decree 86 on climate change governance. These are core to Cuba's climate framework and are verifiable from UNFCCC and approved sources. Include these along with other verifiable recent policies." : ""),
       country,
-    }),
-  ]);
+  });
+  console.log(`National Policy Framework generated in ${((Date.now() - policyStartTime) / 1000).toFixed(1)} seconds`);
 
-  const [instVerified, policyVerified] = await Promise.all([
-    verifyAndReviseSection(instFramework, "Institutional Framework for Climate Action", country),
-    verifyAndReviseSection(policyFramework, "National Policy Framework", country),
-  ]);
+  console.log("Verifying Institutional Framework section... (this may take 10-20 seconds)");
+  const verifyInstStartTime = Date.now();
+  const instVerified = await verifyAndReviseSection(instFramework, "Institutional Framework for Climate Action", country);
+  console.log(`Institutional Framework verified in ${((Date.now() - verifyInstStartTime) / 1000).toFixed(1)} seconds`);
+  
+  console.log("Verifying National Policy Framework section... (this may take 10-20 seconds)");
+  const verifyPolicyStartTime = Date.now();
+  const policyVerified = await verifyAndReviseSection(policyFramework, "National Policy Framework", country);
+  console.log(`National Policy Framework verified in ${((Date.now() - verifyPolicyStartTime) / 1000).toFixed(1)} seconds`);
 
   return {
     country,
@@ -316,7 +518,7 @@ async function renderPdf(outputs: Outputs) {
       console.log(`PDF written to ${OUT_PDF}`);
       resolve();
     });
-    stream.on("error", (err) => reject(err));
+    stream.on("error", (err: Error) => reject(err));
   });
 }
 
@@ -324,7 +526,7 @@ async function main() {
   const args = process.argv.slice(2);
   const saveOnly = args.includes("--save-only");
   const renderOnly = args.includes("--render-only");
-  const countryArg = args.find((a) => !a.startsWith("--")) as string | undefined;
+  const countryArg = args.find((a: string) => !a.startsWith("--")) as string | undefined;
   const country = countryArg ?? "Cuba";
 
   if (renderOnly) {
@@ -337,8 +539,34 @@ async function main() {
     return;
   }
 
+  // Scrape UNFCCC data (includes CBIT check and file upload prompt)
+  console.log(`\n=== Starting process for ${country} ===\n`);
+  console.log("Step 1: Running UNFCCC scraper (includes CBIT check)...");
+  await scrapeUNFCCCData(country);
+  console.log(`UNFCCC scraping step complete.`);
+  
+  // Load CBIT info if it was saved by the Python script
+  console.log(`\nStep 2: Loading CBIT information (if available)...`);
+  const cbitInfo = loadCBITInfo(country);
+  if (cbitInfo) {
+    console.log(`CBIT information loaded.`);
+  } else {
+    console.log(`No CBIT information found.`);
+  }
+  
+  // Load scraped data to use in section generation
+  console.log(`\nStep 3: Loading scraped data...`);
+  const scrapedData = loadScrapedData(country);
+  if (scrapedData.institutional || scrapedData.policy) {
+    console.log(`Loaded scraped UNFCCC data for ${country}`);
+  } else {
+    console.log(`No scraped data found for ${country}, will generate from AI only.`);
+  }
+  
+  console.log(`\nStep 4: Generating sections (this will take 1-2 minutes)...`);
+
   // regenerate
-  const outputs = await regenerate(country);
+  const outputs = await regenerate(country, cbitInfo, scrapedData);
   // print to console
   console.log("\n=== Institutional Framework (VERIFIED) ===\n");
   console.log(outputs.instVerified);

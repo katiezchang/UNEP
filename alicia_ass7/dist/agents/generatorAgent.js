@@ -8,55 +8,13 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Try multiple .env locations: current project root, or alicia_ass7 at the same level
-import fs from "fs";
+// Load .env file from the project root (two levels up from dist/agents/)
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
-const envPaths = [
-  path.resolve(__dirname, "../../.env"), // section_generator/alicia_ass7/.env
-  path.resolve(__dirname, "../../../../alicia_ass7/.env"), // alicia_ass7/.env (sibling directory from UCEP root)
-];
-
-let envLoaded = false;
-for (const envPath of envPaths) {
-  if (fs.existsSync(envPath)) {
-    const result = dotenv.config({ path: envPath });
-    if (!result.error && process.env.OPENAI_API_KEY) {
-      envLoaded = true;
-      break;
-    }
-  }
-}
-
-// If still not loaded, try default location
-if (!envLoaded) {
-  dotenv.config();
-}
-
-const apiKey = process.env.OPENAI_API_KEY;
-if (!apiKey) {
-  console.error("Attempted .env paths:", envPaths);
-  console.error("Current working directory:", process.cwd());
-  console.error("__dirname:", __dirname);
-  throw new Error("OPENAI_API_KEY not found in .env file. Please ensure the .env file exists and contains OPENAI_API_KEY=your_key");
-}
-
-const openai = new OpenAI({ apiKey });
-
-export async function generateSection({
-  sectionTitle,
-  instructions,
-  country,
-  options,
-}: {
-  sectionTitle: string;
-  instructions: string;
-  country: string;
-  options?: {
-    noNumbering?: boolean;
-  };
-}): Promise<string> {
-  // Base prompt: include caller instructions first, then the original, detailed structure & formatting rules
-  let prompt = `
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, });
+export async function generateSection({ sectionTitle, instructions, country, options, }) {
+    // Base prompt: include caller instructions first, then the original, detailed structure & formatting rules
+    let prompt = `
 You are drafting a section for a UN Project Identification Form (PIF) under GEF8-CBIT.
 
 Section: ${sectionTitle}
@@ -97,19 +55,16 @@ Follow these detailed rules:
 
 Return only the complete, properly formatted section narrative ready for inclusion in a GEF8 PIF.
 `;
-
-  // Append dynamic instructions based on options so callers can override structural rules
-  let dynamic = "";
-  if (options?.noNumbering) {
-    dynamic += `\nImportant: Do NOT use numbered sections or numbered paragraphs. Use unnumbered headings and plain paragraphs or bulleted lists instead. Avoid numbering like "1.", "2.", or "1.1" anywhere in the output.`;
-  }
-  // Note: institutional output should be a concise bulleted "Institution: Role" list per section instructions.
-
-  const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{ role: "user", content: prompt + dynamic }],
-    temperature: 0.4,
-  });
-
-  return res.choices[0].message?.content?.trim() ?? "";
+    // Append dynamic instructions based on options so callers can override structural rules
+    let dynamic = "";
+    if (options?.noNumbering) {
+        dynamic += `\nImportant: Do NOT use numbered sections or numbered paragraphs. Use unnumbered headings and plain paragraphs or bulleted lists instead. Avoid numbering like "1.", "2.", or "1.1" anywhere in the output.`;
+    }
+    // Note: institutional output should be a concise bulleted "Institution: Role" list per section instructions.
+    const res = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt + dynamic }],
+        temperature: 0.4,
+    });
+    return res.choices[0].message?.content?.trim() ?? "";
 }

@@ -6,17 +6,20 @@
   "scripts": {
     "start": "npm run build && node dist/index.js",
     "build": "tsc",
-  "export:pdf": "npm run build && node dist/pdfExport.js",
-  "generate:save": "npm run build && node dist/pdfExport.js --save-only",
-  "render:pdf": "npm run build && node dist/pdfExport.js --render-only",
+    "export:pdf": "npm run build && node dist/pdfExport.js",
+    "generate:save": "npm run build && node dist/pdfExport.js --save-only",
+    "render:pdf": "npm run build && node dist/pdfExport.js --render-only",
     "dev": "node --loader ts-node/esm src/index.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
     "openai": "^4.0.0",
+    "pdf-parse": "^2.4.5",
     "pdfkit": "^0.13.0"
   },
   "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/pdf-parse": "^1.1.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.0"
   }

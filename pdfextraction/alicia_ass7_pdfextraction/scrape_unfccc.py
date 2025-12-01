@@ -558,7 +558,14 @@ def write_section_outputs(
         docs.setdefault(entry["source_doc"], []).append(entry)
 
     for source_doc, doc_entries in docs.items():
-        doc_name = slugify(source_doc or "document") + ".json"
+        # Use proper naming convention: {Country}_{SectionName}_{DocType}.json
+        if doc_entries:
+            country = doc_entries[0].get("country", "Unknown")
+            # Convert section name to PascalCase format (e.g., "Institutional framework for climate action" -> "InstitutionalFrameworkForClimateAction")
+            section_pascal = "".join(word.capitalize() for word in section.split())
+            doc_name = f"{{{country}}}_{{{section_pascal}}}_{{{source_doc or 'document'}}}.json"
+        else:
+            doc_name = slugify(source_doc or "document") + ".json"
         doc_path = section_dir / doc_name
         with open(doc_path, "w", encoding="utf-8") as handle:
             json.dump(doc_entries, handle, ensure_ascii=False, indent=2)
@@ -702,6 +709,154 @@ def check_and_use_database_data(
     return True
 
 
+def check_cbit_database(country: str) -> bool:
+    """
+    Check GEF database for completed CBIT projects for a given country.
+    Returns True if a CBIT project exists (CBIT Yes, Completed), False otherwise.
+    Source: https://www.thegef.org/projects-operations/database
+    """
+    # Known CBIT projects from GEF database (hardcoded for speed)
+    # Source: https://www.thegef.org/projects-operations/database?f%5B0%5D=capacity_building_initiative_for_transparency%3A2071&f%5B1%5D=latest_timeline_status%3A396
+    known_cbit_countries = {
+        "Kenya", "Armenia", "Bosnia-Herzegovina", "Cambodia", "Chile", "China",
+        "Costa Rica", "Cote d'Ivoire", "Georgia", "Ghana", "Jamaica", "Liberia",
+        "Madagascar", "Mongolia", "Nicaragua", "North Macedonia", "Panama",
+        "Papua New Guinea", "Serbia", "Uganda", "Uruguay"
+    }
+    
+    # Use print with flush for immediate feedback before logging is fully configured
+    print(f"[INFO] Checking CBIT database for {country}...", flush=True)
+    
+    if country in known_cbit_countries:
+        print(f"[INFO] Found CBIT project for {country} in known CBIT projects list", flush=True)
+        logging.info("Found CBIT project for %s in known CBIT projects list", country)
+        return True
+    
+    # For unknown countries, try to check the database (with timeout)
+    print(f"[INFO] {country} not in known list, checking GEF database (this may take a few seconds)...", flush=True)
+    try:
+        base_url = "https://www.thegef.org/projects-operations/database"
+        url = f"{base_url}?f%5B0%5D=capacity_building_initiative_for_transparency%3A2071&f%5B1%5D=latest_timeline_status%3A396"
+        
+        logging.info("Checking GEF database for CBIT projects for %s...", country)
+        response = requests.get(url, timeout=5, headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        
+        if response.status_code == 200:
+            country_regex = re.compile(rf'\b{re.escape(country)}\b', re.IGNORECASE)
+            has_country = bool(country_regex.search(response.text))
+            if has_country:
+                print(f"[INFO] Found CBIT project for {country} in GEF database")
+                logging.info("Found CBIT project for %s in GEF database", country)
+                return True
+            else:
+                print(f"[INFO] No CBIT project found for {country} in GEF database")
+                logging.info("No CBIT project found for %s in GEF database", country)
+                return False
+        else:
+            print(f"[WARNING] Failed to fetch GEF database: {response.status_code}")
+            logging.warning("Failed to fetch GEF database: %s", response.status_code)
+            return False
+    except Exception as exc:
+        print(f"[WARNING] Error checking CBIT database: {exc}. Proceeding without CBIT check.")
+        logging.warning("Error checking CBIT database: %s. Proceeding without CBIT check.", exc)
+        return False
+
+
+def prompt_for_cbit_file(country: str) -> Optional[str]:
+    """
+    Prompt user for CBIT document upload (supports both local file paths and URLs).
+    Returns the file content as a string, or None if user presses enter.
+    """
+    print(f"\nThere was CBIT 1 for {country} published. Are there any relevant documents you can upload? If not, press enter", flush=True)
+    print("File path or URL: ", end="", flush=True)
+    user_input = input().strip()
+    
+    if not user_input:
+        return None
+    
+    # Check if input is a URL
+    is_url = user_input.startswith("http://") or user_input.startswith("https://")
+    
+    if is_url:
+        # Fetch from URL
+        try:
+            logging.info("Fetching content from URL: %s", user_input)
+            response = requests.get(user_input, timeout=30, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            
+            if not response.ok:
+                logging.error("HTTP error! status: %s", response.status_code)
+                return None
+            
+            content_type = response.headers.get("content-type", "").lower()
+            
+            if "application/pdf" in content_type or user_input.lower().endswith(".pdf"):
+                # Handle PDF: extract text
+                logging.info("Detected PDF file, extracting text...")
+                import io
+                pdf_bytes = io.BytesIO(response.content)
+                pdf_bytes.seek(0)  # Ensure stream is at the beginning
+                try:
+                    with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                        text_parts = []
+                        page_count = len(doc)
+                        for page in doc:
+                            text_parts.append(page.get_text("text"))
+                        extracted_text = "\n".join(text_parts)
+                        logging.info("Successfully extracted text from PDF (%d characters, %d pages)", 
+                                   len(extracted_text), page_count)
+                    return extracted_text
+                except Exception as pdf_error:
+                    logging.error("Error extracting text from PDF: %s", pdf_error)
+                    return None
+            else:
+                # Handle text-based content
+                content = response.text
+                logging.info("Successfully fetched content from URL (%d characters)", len(content))
+                return content
+        except Exception as error:
+            logging.error("Error fetching URL: %s", error)
+            return None
+    else:
+        # Handle as local file path
+        try:
+            file_path = Path(user_input)
+            if not file_path.is_absolute():
+                file_path = Path.cwd() / file_path
+            
+            if not file_path.exists():
+                logging.error("File not found: %s", file_path)
+                return None
+            
+            if file_path.suffix.lower() == ".pdf":
+                # Extract text from PDF
+                logging.info("Extracting text from PDF: %s", file_path)
+                try:
+                    with fitz.open(str(file_path)) as doc:
+                        text_parts = []
+                        page_count = len(doc)
+                        for page in doc:
+                            text_parts.append(page.get_text("text"))
+                        extracted_text = "\n".join(text_parts)
+                        logging.info("Successfully extracted text from PDF (%d characters, %d pages)",
+                                   len(extracted_text), page_count)
+                    return extracted_text
+                except Exception as pdf_error:
+                    logging.error("Error extracting text from PDF: %s", pdf_error)
+                    return None
+            else:
+                # Read as text file
+                content = file_path.read_text(encoding="utf-8")
+                logging.info("Successfully loaded file: %s", file_path)
+                return content
+        except Exception as error:
+            logging.error("Error reading file: %s", error)
+            return None
+
+
 def main(
     country: str,
     output_root: Optional[Path] = None,
@@ -715,6 +870,34 @@ def main(
     """End-to-end pipeline orchestrator."""
     output_root = output_root or Path(__file__).resolve().parent / "data"
     ensure_directory(output_root)
+    
+    # CBIT Check: Check database for completed CBIT projects
+    print(f"\n[INFO] === Starting process for {country} ===\n", flush=True)
+    print("[INFO] Step 1: Checking CBIT database...", flush=True)
+    logging.info("=== Starting process for %s ===", country)
+    logging.info("Step 1: Checking CBIT database...")
+    cbit_info: Optional[str] = None
+    has_cbit_project = check_cbit_database(country)
+    
+    if has_cbit_project:
+        print(f"[INFO] CBIT Check: Found a completed CBIT project for {country}.", flush=True)
+        logging.info("CBIT Check: Found a completed CBIT project for %s.", country)
+        cbit_info = prompt_for_cbit_file(country)
+        
+        if cbit_info:
+            print(f"[INFO] CBIT document loaded. Proceeding with creating PIF.")
+            logging.info("CBIT document loaded. Proceeding with creating PIF.")
+            # Save CBIT info to a file for later use in PDF generation
+            cbit_file = output_root / f"{country}_cbit_info.txt"
+            cbit_file.write_text(cbit_info, encoding="utf-8")
+            print(f"[INFO] Saved CBIT information to {cbit_file}")
+            logging.info("Saved CBIT information to %s", cbit_file)
+        else:
+            print(f"[INFO] No CBIT document provided for {country}. Proceeding with creating PIF.")
+            logging.info("No CBIT document provided for %s. Proceeding with creating PIF.", country)
+    else:
+        print(f"[INFO] CBIT Check: No completed CBIT project found for {country}. Proceeding with creating PIF.")
+        logging.info("CBIT Check: No completed CBIT project found for %s. Proceeding with creating PIF.", country)
     
     # Check database first before scraping
     if not force_scrape and not skip_scrape:
@@ -859,6 +1042,7 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 if __name__ == "__main__":
     arguments = parse_args()
+    
     logging.basicConfig(
         level=getattr(logging, arguments.log_level.upper(), logging.INFO),
         format="[%(levelname)s] %(message)s",

@@ -1,45 +1,16 @@
-# Dependencies
+# Root level node_modules (e.g., alicia_ass7/node_modules/)
 node_modules/
 **/node_modules/
 
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-
-# Environment variables
+# Environment variables and sensitive config files
 .env
 .env.*
+**/supabase_config.json
+**/cookies.json
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Root level Python cache
+__pycache__/
 
 # OS files
 .DS_Store
 Thumbs.db
-ehthumbs.db
-
-# Logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Build outputs
-dist/
-build/
-*.pdf
-
-# Cache
-.cache/
-.parcel-cache/
-.nyc_output/
-coverage/
-.sass-cache/
-

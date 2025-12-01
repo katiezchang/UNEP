@@ -8,43 +8,12 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Try multiple .env locations: current project root, or alicia_ass7 at the same level
-import fs from "fs";
+// Load .env file from the project root (two levels up from dist/agents/)
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
-const envPaths = [
-  path.resolve(__dirname, "../../.env"), // section_generator/alicia_ass7/.env
-  path.resolve(__dirname, "../../../../alicia_ass7/.env"), // alicia_ass7/.env (sibling directory from UCEP root)
-];
-
-let envLoaded = false;
-for (const envPath of envPaths) {
-  if (fs.existsSync(envPath)) {
-    const result = dotenv.config({ path: envPath });
-    if (!result.error) {
-      envLoaded = true;
-      break;
-    }
-  }
-}
-
-// If still not loaded, try default location
-if (!envLoaded) {
-  dotenv.config();
-}
-
-const apiKey = process.env.OPENAI_API_KEY;
-if (!apiKey) {
-  throw new Error("OPENAI_API_KEY not found in .env file");
-}
-
-const openai = new OpenAI({ apiKey });
-
-export async function verifyAndReviseSection(
-  sectionDraft: string,
-  sectionTitle: string,
-  country: string
-): Promise<string> {
-  const verifyPrompt = `
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+export async function verifyAndReviseSection(sectionDraft, sectionTitle, country) {
+    const verifyPrompt = `
 You are an accuracy and compliance reviewer for GEF8-CBIT Project Identification Forms.
 
 Task: Review and fact-check the draft section below.
@@ -71,12 +40,10 @@ Draft Section:
 ${sectionDraft}
 ---
 `;
-
-  const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{ role: "user", content: verifyPrompt }],
-    temperature: 0.2,
-  });
-
-  return res.choices[0].message?.content?.trim() ?? "";
+    const res = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: verifyPrompt }],
+        temperature: 0.2,
+    });
+    return res.choices[0].message?.content?.trim() ?? "";
 }

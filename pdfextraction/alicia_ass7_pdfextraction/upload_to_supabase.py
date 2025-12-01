@@ -43,10 +43,12 @@ def extract_country_from_filename(filename: str) -> str:
     match = re.match(r'\{([^}]+)\}_', filename)
     if match:
         return match.group(1)
-    # Handle formats like: Country_transformed.json
-    match = re.match(r'^([^_]+)_transformed', filename)
+    # Handle formats like: Country_transformed.json (including multi-word countries with underscores)
+    match = re.match(r'^(.+?)_transformed', filename)
     if match:
-        return match.group(1)
+        # Replace underscores with spaces for country names
+        country = match.group(1).replace('_', ' ')
+        return country
     return "Unknown"
 
 
