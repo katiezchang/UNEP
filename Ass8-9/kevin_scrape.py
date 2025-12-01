@@ -32,6 +32,7 @@ from bs4 import BeautifulSoup  # type: ignore
 
 BASE_URL = "https://unfccc.int"
 BUR_LANDING_URL = f"{BASE_URL}/BURs"
+REPORTS_URL = f"{BASE_URL}/reports"
 REPORTS_AJAX_URL = f"{BASE_URL}/views/ajax"
 
 REQUEST_TIMEOUT = 45
@@ -105,11 +106,25 @@ def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def request_session() -> requests.Session:
-    """Create a configured requests session."""
+def load_cookies(filepath: Path) -> Dict[str, str]:
+    """
+    Load cookies from a JSON file (same simple format used in Alicia's scraper).
+    Expected format: { "cookieName": "value", ... }
+    """
+    with open(filepath, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("Cookie file must contain a JSON object of name/value pairs.")
+    return {str(key): str(value) for key, value in data.items()}
+
+
+def request_session(cookies: Dict[str, str] | None = None) -> requests.Session:
+    """Create a configured requests session, optionally seeded with cookies."""
     session = requests.Session()
     session.headers.update(HEADERS)
     session.max_redirects = 10
+    if cookies:
+        session.cookies.update(cookies)
     return session
 
 
@@ -231,41 +246,81 @@ def get_bur_page(session: requests.Session) -> str:
 def get_country_bur_links(html: str, country: str, session: requests.Session) -> List[PDFLink]:
     """
     Parse the BUR listing HTML and return BUR PDFs for a given country.
-
-    This is intentionally conservative: it only keeps links whose surrounding
-    text clearly mentions the country and BUR.
+    Uses table-row parsing (like Alicia's script) for more robust extraction.
     """
     soup = BeautifulSoup(html, "html.parser")
     pdf_links: List[PDFLink] = []
     seen: set[str] = set()
 
-    anchors = soup.select("a[href]")
-    for a in anchors:
-        href = a.get("href") or ""
+    # First, try table-row parsing (more robust, like Alicia's script)
+    table_rows = soup.select("table tbody tr")
+    if table_rows:
+        for row in table_rows:
+            cells = row.select("td")
+            if not cells:
+                continue
+            row_text = " ".join(cell.get_text(" ", strip=True) for cell in cells)
+            if country.lower() not in row_text.lower():
+                continue
 
-        # Use nearby text to check for the country name and context first.
-        parent = a.find_parent(["tr", "li", "div", "p"]) or a
-        text_blob = parent.get_text(" ", strip=True)
-        combined = f"{a.get_text(' ', strip=True)} {text_blob} {href}"
+            # Check if this row mentions BUR
+            if "bur" not in row_text.lower() and "biennial update report" not in row_text.lower():
+                continue
 
-        if country.lower() not in combined.lower():
-            continue
+            file_cell_text = cells[-1].get_text(" ", strip=True).lower()
+            if "pdf" not in file_cell_text:
+                continue
 
-        # Decide if this looks like a BUR based on the label text.
-        doc_type = deduce_doc_type(combined)
-        if not doc_type.upper().startswith("BUR"):
-            continue
+            link_element = row.select_one("a[href*='/documents/']") or row.select_one("a[href]")
+            if not link_element:
+                continue
+            href = link_element.get("href")
+            if not href:
+                continue
 
-        pdf_url = resolve_pdf_url(session, href)
-        if not pdf_url:
-            continue
+            doc_type = deduce_doc_type(row_text)
+            if not doc_type.upper().startswith("BUR"):
+                continue
 
-        if pdf_url in seen:
-            continue
-        seen.add(pdf_url)
+            pdf_url = resolve_pdf_url(session, href)
+            if not pdf_url:
+                continue
+            if pdf_url in seen:
+                continue
+            seen.add(pdf_url)
 
-        title = a.get_text(" ", strip=True) or f"{country} BUR"
-        pdf_links.append(PDFLink(title=title, url=pdf_url, source_doc=doc_type))
+            doc_name = cells[0].get_text(" ", strip=True) if cells else doc_type
+            title = doc_name or f"{country} BUR"
+            pdf_links.append(PDFLink(title=title, url=pdf_url, source_doc=doc_type))
+    else:
+        # Fallback to anchor-based parsing if no table rows found
+        anchors = soup.select("a[href]")
+        for a in anchors:
+            href = a.get("href") or ""
+
+            # Use nearby text to check for the country name and context first.
+            parent = a.find_parent(["tr", "li", "div", "p"]) or a
+            text_blob = parent.get_text(" ", strip=True)
+            combined = f"{a.get_text(' ', strip=True)} {text_blob} {href}"
+
+            if country.lower() not in combined.lower():
+                continue
+
+            # Decide if this looks like a BUR based on the label text.
+            doc_type = deduce_doc_type(combined)
+            if not doc_type.upper().startswith("BUR"):
+                continue
+
+            pdf_url = resolve_pdf_url(session, href)
+            if not pdf_url:
+                continue
+
+            if pdf_url in seen:
+                continue
+            seen.add(pdf_url)
+
+            title = a.get_text(" ", strip=True) or f"{country} BUR"
+            pdf_links.append(PDFLink(title=title, url=pdf_url, source_doc=doc_type))
 
     logging.info("Found %d BUR PDFs for %s", len(pdf_links), country)
     return pdf_links
@@ -347,7 +402,7 @@ def parse_reports_pdf_links(
 def get_bur_pdfs_for_country(session: requests.Session, country: str) -> List[PDFLink]:
     """
     Try Ajax-based discovery first; if that fails, fall back to scraping the
-    BUR landing page HTML.
+    BUR landing page HTML, then try the main reports page.
     """
     try:
         ajax_html = fetch_country_results_via_ajax(session, country)
@@ -373,8 +428,26 @@ def get_bur_pdfs_for_country(session: requests.Session, country: str) -> List[PD
             country,
         )
 
+    # Try BUR landing page
     html = get_bur_page(session)
-    return get_country_bur_links(html, country, session)
+    pdf_links = get_country_bur_links(html, country, session)
+    if pdf_links:
+        return pdf_links
+
+    # Fallback: try main reports page with country search
+    logging.info("Trying main reports page for %s", country)
+    try:
+        params = {"search_api_fulltext": country}
+        response = session.get(REPORTS_URL, params=params, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        reports_html = response.text
+        pdf_links = get_country_bur_links(reports_html, country, session)
+        if pdf_links:
+            return pdf_links
+    except Exception as exc:  # noqa: BLE001
+        logging.warning("Failed to fetch reports page for %s: %s", country, exc)
+
+    return []
 
 
 def download_pdf(session: requests.Session, pdf: PDFLink, download_dir: Path) -> Path:
@@ -592,6 +665,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to a local BUR PDF file to process instead of scraping UNFCCC.",
     )
+    parser.add_argument(
+        "--cookies-file",
+        default=None,
+        help="Optional path to JSON file with unfccc.int cookies (same format as Alicia's scraper).",
+    )
     return parser.parse_args()
 
 
@@ -647,7 +725,11 @@ def main() -> None:
             )
             collected[section_name].append(entry)
     else:
-        session = request_session()
+        cookies: Dict[str, str] | None = None
+        if args.cookies_file:
+            cookies = load_cookies(Path(args.cookies_file).expanduser().resolve())
+
+        session = request_session(cookies)
         pdf_links = get_bur_pdfs_for_country(session, country)
         if not pdf_links:
             logging.warning("No BUR PDFs found for %s on %s", country, BUR_LANDING_URL)
