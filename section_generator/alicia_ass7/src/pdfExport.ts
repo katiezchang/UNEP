@@ -59,8 +59,7 @@ async function scrapeUNFCCCData(country: string): Promise<void> {
       scrapeScriptPath,
       "--country", country,
       "--cookies-file", cookiesPath,
-      "--log-level", "INFO",
-      "--force-scrape"
+      "--log-level", "INFO"
     ], {
       cwd: path.dirname(scrapeScriptPath),
       stdio: "inherit"
@@ -86,6 +85,29 @@ async function scrapeUNFCCCData(country: string): Promise<void> {
 /**
  * Load scraped data from bundle JSON files
  */
+/**
+ * Truncate text to approximately maxChars, trying to break at sentence boundaries
+ */
+function truncateText(text: string, maxChars: number = 30000): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  
+  // Try to truncate at a sentence boundary
+  const truncated = text.substring(0, maxChars);
+  const lastPeriod = truncated.lastIndexOf('.');
+  const lastNewline = truncated.lastIndexOf('\n');
+  const breakPoint = Math.max(lastPeriod, lastNewline);
+  
+  if (breakPoint > maxChars * 0.8) {
+    // Good break point found
+    return truncated.substring(0, breakPoint + 1) + "\n\n[Text truncated for length...]";
+  }
+  
+  // Fallback to hard truncation
+  return truncated + "\n\n[Text truncated for length...]";
+}
+
 function loadScrapedData(country: string): { institutional?: string; policy?: string } {
   const dataDir = path.resolve(__dirname, "../../../pdfextraction/alicia_ass7_pdfextraction/data");
   const instBundle = path.join(dataDir, "Institutional_framework_bundle.json");
@@ -102,7 +124,9 @@ function loadScrapedData(country: string): { institutional?: string; policy?: st
         : [];
       if (countryEntries.length > 0) {
         // Combine all extracted text for this country
-        result.institutional = countryEntries.map((e: any) => e.extracted_text).join("\n\n");
+        const combined = countryEntries.map((e: any) => e.extracted_text).join("\n\n");
+        // Truncate to ~30k chars to avoid token limit issues
+        result.institutional = truncateText(combined, 30000);
       }
     }
   } catch (error) {
@@ -118,7 +142,9 @@ function loadScrapedData(country: string): { institutional?: string; policy?: st
         : [];
       if (countryEntries.length > 0) {
         // Combine all extracted text for this country
-        result.policy = countryEntries.map((e: any) => e.extracted_text).join("\n\n");
+        const combined = countryEntries.map((e: any) => e.extracted_text).join("\n\n");
+        // Truncate to ~30k chars to avoid token limit issues
+        result.policy = truncateText(combined, 30000);
       }
     }
   } catch (error) {

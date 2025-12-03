@@ -113,11 +113,12 @@ def upload_json_file(
     logging.info("Found %d entries to upload from %s", len(entries), json_path.name)
     
     uploaded = 0
+    updated = 0
     failed = 0
     
     for entry in entries:
         try:
-            # Prepare the entry for database insertion
+            # Prepare the entry for database insertion/update
             db_entry = {
                 "country": entry.get("country", country),
                 "section": entry.get("section", ""),
@@ -127,25 +128,40 @@ def upload_json_file(
                 "created_utc": entry.get("created_utc", datetime.utcnow().isoformat().replace("+00:00", "Z")),
             }
             
-            # Insert into Supabase
-            response = client.table(table_name).insert(db_entry).execute()
+            # Check if entry already exists (based on unique constraint: country, section, source_doc, doc_url)
+            existing = client.table(table_name).select("id").eq("country", db_entry["country"]).eq("section", db_entry["section"]).eq("source_doc", db_entry["source_doc"]).eq("doc_url", db_entry["doc_url"]).execute()
             
-            if response.data:
-                uploaded += 1
-                if uploaded % 10 == 0:
-                    logging.info("Uploaded %d entries...", uploaded)
+            if existing.data and len(existing.data) > 0:
+                # Entry exists - update it
+                response = client.table(table_name).update({
+                    "extracted_text": db_entry["extracted_text"],
+                    "created_utc": db_entry["created_utc"],
+                }).eq("country", db_entry["country"]).eq("section", db_entry["section"]).eq("source_doc", db_entry["source_doc"]).eq("doc_url", db_entry["doc_url"]).execute()
+                
+                if response.data:
+                    updated += 1
+                    if (updated + uploaded) % 10 == 0:
+                        logging.info("Processed %d entries (uploaded: %d, updated: %d)...", uploaded + updated, uploaded, updated)
             else:
-                failed += 1
-                logging.warning("Failed to upload entry for %s - %s", 
-                              entry.get("country"), entry.get("source_doc"))
+                # Entry doesn't exist - insert it
+                response = client.table(table_name).insert(db_entry).execute()
+                
+                if response.data:
+                    uploaded += 1
+                    if (uploaded + updated) % 10 == 0:
+                        logging.info("Processed %d entries (uploaded: %d, updated: %d)...", uploaded + updated, uploaded, updated)
+                else:
+                    failed += 1
+                    logging.warning("Failed to upload entry for %s - %s", 
+                                  entry.get("country"), entry.get("source_doc"))
                 
         except Exception as exc:
             failed += 1
             logging.error("Error uploading entry: %s", exc)
             logging.debug("Failed entry: %s - %s", entry.get("country", "unknown"), entry.get("source_doc", "unknown"))
     
-    logging.info("Upload complete for %s: %d successful, %d failed", json_path.name, uploaded, failed)
-    return uploaded
+    logging.info("Upload complete for %s: %d uploaded, %d updated, %d failed", json_path.name, uploaded, updated, failed)
+    return uploaded + updated
 
 
 def upload_bundle_entries(
@@ -157,6 +173,79 @@ def upload_bundle_entries(
     return upload_json_file(client, bundle_path, table_name)
 
 
+def merge_sections_data(existing_data: Dict, new_data: Dict) -> Dict:
+    """
+    Merge new sections data with existing data, adding new sections and documents.
+    
+    Args:
+        existing_data: Existing sections data from database
+        new_data: New sections data to merge in
+        
+    Returns:
+        Merged sections data
+    """
+    merged = {"sections": []}
+    
+    # Create a map of existing sections by name for quick lookup
+    existing_sections_map = {}
+    if isinstance(existing_data, dict) and "sections" in existing_data:
+        for section in existing_data.get("sections", []):
+            section_name = section.get("name", "")
+            if section_name:
+                existing_sections_map[section_name] = section
+    
+    # Process each section in new data
+    for new_section in new_data.get("sections", []):
+        section_name = new_section.get("name", "")
+        if not section_name:
+            continue
+        
+        # Check if section already exists
+        if section_name in existing_sections_map:
+            # Merge documents for existing section
+            existing_section = existing_sections_map[section_name]
+            existing_docs = existing_section.get("documents", [])
+            
+            # Create a set of existing doc_types for quick lookup
+            existing_doc_types = {doc.get("doc_type", "") for doc in existing_docs}
+            
+            # Start with existing documents
+            merged_documents = list(existing_docs)
+            
+            # Add new documents that don't already exist (by doc_type)
+            for new_doc in new_section.get("documents", []):
+                new_doc_type = new_doc.get("doc_type", "")
+                if new_doc_type and new_doc_type not in existing_doc_types:
+                    merged_documents.append(new_doc)
+                    logging.info("Adding new document type %s to section %s", new_doc_type, section_name)
+                elif new_doc_type in existing_doc_types:
+                    # Update existing document with same doc_type
+                    for i, existing_doc in enumerate(merged_documents):
+                        if existing_doc.get("doc_type", "") == new_doc_type:
+                            merged_documents[i] = new_doc
+                            logging.info("Updating existing document type %s in section %s", new_doc_type, section_name)
+                            break
+            
+            # Create merged section
+            merged_section = {
+                "name": section_name,
+                "documents": merged_documents
+            }
+            merged["sections"].append(merged_section)
+        else:
+            # New section, add it entirely
+            merged["sections"].append(new_section)
+            logging.info("Adding new section %s", section_name)
+    
+    # Add any existing sections that weren't in new data
+    for section_name, existing_section in existing_sections_map.items():
+        # Check if this section was already processed
+        if not any(s.get("name") == section_name for s in merged["sections"]):
+            merged["sections"].append(existing_section)
+    
+    return merged
+
+
 def upload_country_to_countries_table(
     client: Client,
     json_path: Path,
@@ -165,12 +254,13 @@ def upload_country_to_countries_table(
 ) -> bool:
     """
     Upload a country's data to the countries table.
+    Merges new data with existing data if country already exists.
     
     Args:
         client: Supabase client instance
         json_path: Path to the country transformed JSON file
         table_name: Name of the countries table (default: "countries")
-        upsert: Whether to update if country already exists (default: True)
+        upsert: Whether to merge/update if country already exists (default: True)
         
     Returns:
         True if successful, False otherwise
@@ -186,30 +276,37 @@ def upload_country_to_countries_table(
     
     try:
         with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            new_data = json.load(f)
         
         # Ensure data has the sections structure
-        if not isinstance(data, dict) or "sections" not in data:
+        if not isinstance(new_data, dict) or "sections" not in new_data:
             logging.error("Invalid format in %s - expected object with 'sections' key", json_path.name)
             return False
         
-        # Prepare the database entry
-        db_entry = {
-            "name": country_name,
-            "sections": data  # Store the entire JSON structure in the jsonb field
-        }
-        
         # Check if country already exists
-        existing = client.table(table_name).select("name").eq("name", country_name).execute()
+        existing_response = client.table(table_name).select("name, sections").eq("name", country_name).execute()
         
-        if upsert and existing.data:
-            # Update existing record
+        if upsert and existing_response.data and len(existing_response.data) > 0:
+            # Country exists - merge new data with existing data
+            existing_record = existing_response.data[0]
+            existing_sections = existing_record.get("sections", {})
+            
+            logging.info("Country %s exists in database, merging new data with existing data", country_name)
+            
+            # Merge sections
+            merged_data = merge_sections_data(existing_sections, new_data)
+            
+            # Update with merged data
             response = client.table(table_name).update({
-                "sections": data
+                "sections": merged_data
             }).eq("name", country_name).execute()
-            logging.info("Updated existing record for %s", country_name)
+            logging.info("Updated existing record for %s with merged data", country_name)
         else:
             # Insert new record
+            db_entry = {
+                "name": country_name,
+                "sections": new_data
+            }
             response = client.table(table_name).insert(db_entry).execute()
             logging.info("Inserted new record for %s", country_name)
         

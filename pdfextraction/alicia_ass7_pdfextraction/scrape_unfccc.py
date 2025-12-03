@@ -880,73 +880,86 @@ def main(
     output_root = output_root or Path(__file__).resolve().parent / "data"
     ensure_directory(output_root)
     
-    # ICAT/PATPA Prompt: Ask for relevant transparency framework documents
     print(f"\n[INFO] === Starting process for {country} ===\n", flush=True)
-    print("[INFO] Step 0: Checking for ICAT/PATPA documents...", flush=True)
     logging.info("=== Starting process for %s ===", country)
-    logging.info("Step 0: Checking for ICAT/PATPA documents...")
     
-    icat_patpa_info: Optional[str] = None
-    icat_patpa_prompt = (
-        f"Are there any documents relevant to Initiative for Climate Action Transparency (ICAT) "
-        f"or Partnership on Transparency in the Paris Agreement (PATPA) for {country}? "
-        f"If not, press enter"
-    )
-    icat_patpa_info = prompt_for_file(icat_patpa_prompt)
-    
-    if icat_patpa_info:
-        # Check for transparency framework keywords
-        transparency_keywords = ["transparency framework", "enhanced transparency", "ETF", 
-                                "ICAT", "PATPA", "biennial transparency report", "BTR"]
-        has_relevant_content = any(keyword.lower() in icat_patpa_info.lower() for keyword in transparency_keywords)
-        
-        if has_relevant_content:
-            print(f"[INFO] ICAT/PATPA document loaded with relevant transparency framework content. Proceeding with creating PIF.")
-            logging.info("ICAT/PATPA document loaded with relevant transparency framework content.")
-            # Save ICAT/PATPA info to a file for later use in PDF generation
-            icat_patpa_file = output_root / f"{country}_icat_patpa_info.txt"
-            icat_patpa_file.write_text(icat_patpa_info, encoding="utf-8")
-            print(f"[INFO] Saved ICAT/PATPA information to {icat_patpa_file}")
-            logging.info("Saved ICAT/PATPA information to %s", icat_patpa_file)
-        else:
-            print(f"[INFO] ICAT/PATPA document loaded but does not contain relevant transparency framework keywords. Proceeding with creating PIF.")
-            logging.info("ICAT/PATPA document loaded but does not contain relevant transparency framework keywords.")
-    else:
-        print(f"[INFO] No ICAT/PATPA document provided for {country}. Proceeding with creating PIF.")
-        logging.info("No ICAT/PATPA document provided for %s. Proceeding with creating PIF.", country)
-    
-    # CBIT Check: Check database for completed CBIT projects
-    print("[INFO] Step 1: Checking CBIT database...", flush=True)
-    logging.info("=== Starting process for %s ===", country)
-    logging.info("Step 1: Checking CBIT database...")
-    cbit_info: Optional[str] = None
-    has_cbit_project = check_cbit_database(country)
-    
-    if has_cbit_project:
-        print(f"[INFO] CBIT Check: Found a completed CBIT project for {country}.", flush=True)
-        logging.info("CBIT Check: Found a completed CBIT project for %s.", country)
-        cbit_info = prompt_for_cbit_file(country)
-        
-        if cbit_info:
-            print(f"[INFO] CBIT document loaded. Proceeding with creating PIF.")
-            logging.info("CBIT document loaded. Proceeding with creating PIF.")
-            # Save CBIT info to a file for later use in PDF generation
-            cbit_file = output_root / f"{country}_cbit_info.txt"
-            cbit_file.write_text(cbit_info, encoding="utf-8")
-            print(f"[INFO] Saved CBIT information to {cbit_file}")
-            logging.info("Saved CBIT information to %s", cbit_file)
-        else:
-            print(f"[INFO] No CBIT document provided for {country}. Proceeding with creating PIF.")
-            logging.info("No CBIT document provided for %s. Proceeding with creating PIF.", country)
-    else:
-        print(f"[INFO] CBIT Check: No completed CBIT project found for {country}. Proceeding with creating PIF.")
-        logging.info("CBIT Check: No completed CBIT project found for %s. Proceeding with creating PIF.", country)
-    
-    # Check database first before scraping
+    # Check database FIRST before any prompts
+    using_database_data = False
     if not force_scrape and not skip_scrape:
         if check_and_use_database_data(country, output_root, force_scrape):
-            logging.info("Using database data for %s, skipping scrape", country)
+            logging.info("Using database data for %s, skipping scrape and prompts", country)
+            print(f"[INFO] Found existing data in Supabase for {country}. Using database data (includes CBIT if available).", flush=True)
+            using_database_data = True
+            
+            # Check if CBIT info file already exists (from previous run)
+            cbit_file = output_root / f"{country}_cbit_info.txt"
+            if cbit_file.exists():
+                logging.info("CBIT info file already exists for %s", country)
+                print(f"[INFO] CBIT information file found for {country}.", flush=True)
+            
+            # Skip all prompts and return early
             return
+    
+    # Only run prompts if NOT using database data
+    if not using_database_data:
+        # ICAT/PATPA Prompt: Ask for relevant transparency framework documents
+        print("[INFO] Step 0: Checking for ICAT/PATPA documents...", flush=True)
+        logging.info("Step 0: Checking for ICAT/PATPA documents...")
+        
+        icat_patpa_info: Optional[str] = None
+        icat_patpa_prompt = (
+            f"Are there any documents relevant to Initiative for Climate Action Transparency (ICAT) "
+            f"or Partnership on Transparency in the Paris Agreement (PATPA) for {country}? "
+            f"If not, press enter"
+        )
+        icat_patpa_info = prompt_for_file(icat_patpa_prompt)
+        
+        if icat_patpa_info:
+            # Check for transparency framework keywords
+            transparency_keywords = ["transparency framework", "enhanced transparency", "ETF", 
+                                    "ICAT", "PATPA", "biennial transparency report", "BTR"]
+            has_relevant_content = any(keyword.lower() in icat_patpa_info.lower() for keyword in transparency_keywords)
+            
+            if has_relevant_content:
+                print(f"[INFO] ICAT/PATPA document loaded with relevant transparency framework content. Proceeding with creating PIF.")
+                logging.info("ICAT/PATPA document loaded with relevant transparency framework content.")
+                # Save ICAT/PATPA info to a file for later use in PDF generation
+                icat_patpa_file = output_root / f"{country}_icat_patpa_info.txt"
+                icat_patpa_file.write_text(icat_patpa_info, encoding="utf-8")
+                print(f"[INFO] Saved ICAT/PATPA information to {icat_patpa_file}")
+                logging.info("Saved ICAT/PATPA information to %s", icat_patpa_file)
+            else:
+                print(f"[INFO] ICAT/PATPA document loaded but does not contain relevant transparency framework keywords. Proceeding with creating PIF.")
+                logging.info("ICAT/PATPA document loaded but does not contain relevant transparency framework keywords.")
+        else:
+            print(f"[INFO] No ICAT/PATPA document provided for {country}. Proceeding with creating PIF.")
+            logging.info("No ICAT/PATPA document provided for %s. Proceeding with creating PIF.", country)
+        
+        # CBIT Check: Check database for completed CBIT projects
+        print("[INFO] Step 1: Checking CBIT database...", flush=True)
+        logging.info("Step 1: Checking CBIT database...")
+        cbit_info: Optional[str] = None
+        has_cbit_project = check_cbit_database(country)
+        
+        if has_cbit_project:
+            print(f"[INFO] CBIT Check: Found a completed CBIT project for {country}.", flush=True)
+            logging.info("CBIT Check: Found a completed CBIT project for %s.", country)
+            cbit_info = prompt_for_cbit_file(country)
+            
+            if cbit_info:
+                print(f"[INFO] CBIT document loaded. Proceeding with creating PIF.")
+                logging.info("CBIT document loaded. Proceeding with creating PIF.")
+                # Save CBIT info to a file for later use in PDF generation
+                cbit_file = output_root / f"{country}_cbit_info.txt"
+                cbit_file.write_text(cbit_info, encoding="utf-8")
+                print(f"[INFO] Saved CBIT information to {cbit_file}")
+                logging.info("Saved CBIT information to %s", cbit_file)
+            else:
+                print(f"[INFO] No CBIT document provided for {country}. Proceeding with creating PIF.")
+                logging.info("No CBIT document provided for %s. Proceeding with creating PIF.", country)
+        else:
+            print(f"[INFO] CBIT Check: No completed CBIT project found for {country}. Proceeding with creating PIF.")
+            logging.info("CBIT Check: No completed CBIT project found for %s. Proceeding with creating PIF.", country)
     
     # Proceed with scraping if database check didn't find data or force_scrape is True
     session = request_session(cookies=cookies)
